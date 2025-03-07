@@ -10,22 +10,19 @@ from app.schemas.response import (
     GetRideResponse,
     RideActionResponse,
     RideListResponse,
-    PriceEstimateResponse,
     RideResponseData,
-    PriceEstimateResponseData,
     RideActionResponseData,
     RideListResponseData,
-    LocationResponse
+    LocationResponse,
+    StopResponse
 )
 from app.schemas.requests import (
     CreateRideRequest,
     JoinRideRequest,
-    CloseRideRequest,
-    EstimateRidePriceRequest,
-    LocationRequest
+    CloseRideRequest
 )
 from app.models.user import Driver, Customer
-from app.models.ride import Ride, Location, RideStop
+from app.models.ride import Ride, Location, RideStop, RecurringPattern
 from app.models.car import Car
 from app.services.ride_service import (
     create_ride,
@@ -39,51 +36,6 @@ from app.services.auth_service import get_current_user, get_current_driver, get_
 from app.services.maps_service import calculate_route, calculate_price_per_rider
 
 router = APIRouter()
-
-
-@router.post("/estimate", response_model=PriceEstimateResponse)
-async def estimate_ride_price(
-    estimate_request: EstimateRidePriceRequest,
-    db: AsyncSession = Depends(get_db)
-):
-    """Estimate the price of a ride based on distance"""
-    try:
-        # Parse coordinates
-        start_coords = tuple(map(float, estimate_request.start_location.coordinates.split(",")))
-        end_coords = tuple(map(float, estimate_request.end_location.coordinates.split(",")))
-        
-        # Parse waypoints if provided
-        waypoints = None
-        if estimate_request.stops:
-            waypoints = [
-                tuple(map(float, stop.coordinates.split(",")))
-                for stop in estimate_request.stops
-            ]
-        
-        # Calculate route using Google Maps API
-        route_info = await calculate_route(start_coords, end_coords, waypoints)
-        
-        if route_info.get("status") != "OK":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Error calculating route: {route_info.get('error_message', 'Unknown error')}"
-            )
-        
-        # Create response
-        estimate_data = PriceEstimateResponseData(
-            distance_miles=route_info["distance_miles"],
-            estimated_duration_minutes=route_info["duration_minutes"],
-            recommended_price=route_info["recommended_price"],
-            polyline=route_info["polyline"]
-        )
-        
-        return PriceEstimateResponse(data=estimate_data)
-    
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error estimating ride price: {str(e)}"
-        )
 
 
 @router.post("/", response_model=CreateRideResponse)

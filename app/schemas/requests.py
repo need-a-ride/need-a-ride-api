@@ -92,13 +92,6 @@ class CreateRideRequest(BaseModel):
     recurring_pattern: Optional[RecurringPatternRequest] = Field(None, description="Recurring pattern details")
 
 
-class EstimateRidePriceRequest(BaseModel):
-    """Request model for estimating ride price"""
-    start_location: LocationRequest = Field(..., description="Starting location")
-    end_location: LocationRequest = Field(..., description="Destination location")
-    stops: Optional[List[LocationRequest]] = Field(None, description="Intermediate stops (optional)")
-
-
 class JoinRideRequest(BaseModel):
     """Request model for joining a ride"""
     ride_id: int = Field(..., description="ID of the ride to join")
