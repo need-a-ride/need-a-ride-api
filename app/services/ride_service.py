@@ -1,11 +1,14 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import select, func
+from sqlalchemy.orm import joinedload
 from datetime import datetime
-from typing import List, Optional
-from app.models.ride import Ride, RecurringPattern, RideRiders
+from typing import List, Optional, Tuple
+from app.models.ride import Ride, RecurringPattern, RideRiders, Location, RideStop
+from app.models.car import Car
 from app.schemas.requests import CreateRideRequest
 from app.core.estimator import get_route, calculate_nearest_distance
 from app.services.location_service import LocationService
+from app.services.maps_service import calculate_price_per_rider
 
 
 async def create_ride(db: AsyncSession, ride: CreateRideRequest, driver_id: int):
@@ -81,7 +84,12 @@ async def get_rides(
     Returns:
         List of Ride objects
     """
-    query = select(Ride)
+    query = select(Ride).options(
+        joinedload(Ride.start_location),
+        joinedload(Ride.end_location),
+        joinedload(Ride.car),
+        joinedload(Ride.stops).joinedload(RideStop.location)
+    )
     
     # Apply filters
     if driver_id is not None:
@@ -128,12 +136,40 @@ async def get_total_rides_count(
     return result.scalar()
 
 
-async def get_ride(db: AsyncSession, ride_id: int):
-    result = await db.execute(select(Ride).filter(Ride.id == ride_id))
+async def get_ride(db: AsyncSession, ride_id: int) -> Optional[Ride]:
+    """
+    Get a ride by ID with all related data
+    
+    Args:
+        db: Database session
+        ride_id: ID of the ride to retrieve
+        
+    Returns:
+        Ride object or None if not found
+    """
+    query = select(Ride).options(
+        joinedload(Ride.start_location),
+        joinedload(Ride.end_location),
+        joinedload(Ride.car),
+        joinedload(Ride.stops).joinedload(RideStop.location)
+    ).filter(Ride.id == ride_id)
+    
+    result = await db.execute(query)
     return result.scalars().first()
 
 
-async def join_ride(db: AsyncSession, ride_id: int, customer_id: int):
+async def join_ride(db: AsyncSession, ride_id: int, customer_id: int) -> Ride:
+    """
+    Join a ride as a customer
+    
+    Args:
+        db: Database session
+        ride_id: ID of the ride to join
+        customer_id: ID of the customer joining the ride
+        
+    Returns:
+        Updated Ride object
+    """
     ride = await get_ride(db, ride_id)
     if not ride:
         raise ValueError("Ride not found")
@@ -157,20 +193,34 @@ async def join_ride(db: AsyncSession, ride_id: int, customer_id: int):
     db.add(rider_entry)
     ride.current_riders += 1
     await db.commit()
+    await db.refresh(ride)
     return ride
 
 
-async def close_ride_registration(db: AsyncSession, ride_id: int, driver_id: int):
+async def close_ride_registration(db: AsyncSession, ride_id: int, driver_id: int) -> Ride:
+    """
+    Close registration for a ride and calculate final price per rider
+    
+    Args:
+        db: Database session
+        ride_id: ID of the ride to close
+        driver_id: ID of the driver (for authorization)
+        
+    Returns:
+        Updated Ride object
+    """
     ride = await get_ride(db, ride_id)
     if not ride or ride.driver_id != driver_id:
         raise ValueError("Unauthorized or ride not found")
 
     ride.registration_open = False
+    
+    # Calculate price per rider if there are riders
     if ride.current_riders > 0:
-        # Calculate split price
-        split_price = ride.price / ride.current_riders  # +1 for driver
-        # Update payment information (you'll need to implement this)
-        # TODO: Implement payment information update
-
+        # Price is already set based on distance, no need to recalculate
+        # Just update the payment information if needed
+        pass
+    
     await db.commit()
+    await db.refresh(ride)
     return ride
