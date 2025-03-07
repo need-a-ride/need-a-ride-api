@@ -5,6 +5,23 @@ from app.schemas.user import UserResponse
 from app.schemas.ride import RideResponse
 
 
+# Location Response Models
+class LocationResponse(BaseModel):
+    """Location data returned in responses"""
+    id: int = Field(..., description="Location ID")
+    address: str = Field(..., description="Location address")
+    latitude: float = Field(..., description="Location latitude")
+    longitude: float = Field(..., description="Location longitude")
+    formatted_address: Optional[str] = Field(None, description="Formatted address")
+
+
+class StopResponse(BaseModel):
+    """Stop data returned in responses"""
+    id: int = Field(..., description="Stop ID")
+    location: LocationResponse = Field(..., description="Stop location")
+    stop_order: int = Field(..., description="Order of the stop in the ride")
+
+
 # Car Response Models
 class CarResponse(BaseModel):
     """Car data returned in responses"""
@@ -64,15 +81,34 @@ class LogoutResponseData(BaseModel):
     message: str = Field(..., description="Logout status message")
 
 
-# Ride Response Models with Car Information
-class CreateRideResponseData(RideResponse):
-    """Data structure returned by create ride endpoint"""
+# Ride Response Models
+class RideResponseData(BaseModel):
+    """Base ride data returned in responses"""
+    id: int = Field(..., description="Ride ID")
+    driver_id: int = Field(..., description="Driver ID")
+    start_location: LocationResponse = Field(..., description="Starting location")
+    end_location: LocationResponse = Field(..., description="Destination location")
+    stops: Optional[List[StopResponse]] = Field([], description="Intermediate stops")
+    price: float = Field(..., description="Ride price")
+    recommended_price: float = Field(..., description="Recommended price based on distance")
+    price_per_rider: Optional[float] = Field(None, description="Price per rider (if ride has riders)")
+    max_riders: int = Field(..., description="Maximum number of riders")
+    current_riders: int = Field(..., description="Current number of riders")
+    ride_date: datetime = Field(..., description="Date and time of the ride")
+    registration_open: bool = Field(..., description="Whether registration is open")
+    distance_miles: float = Field(..., description="Ride distance in miles")
+    estimated_duration_minutes: int = Field(..., description="Estimated travel time in minutes")
+    is_recurring: bool = Field(..., description="Whether the ride is recurring")
+    has_stops: bool = Field(..., description="Whether the ride has intermediate stops")
     car: CarResponse = Field(..., description="Car used for this ride")
 
 
-class GetRideResponseData(RideResponse):
-    """Data structure returned by get ride endpoint"""
-    car: CarResponse = Field(..., description="Car used for this ride")
+class PriceEstimateResponseData(BaseModel):
+    """Data structure returned by price estimate endpoint"""
+    distance_miles: float = Field(..., description="Estimated distance in miles")
+    estimated_duration_minutes: int = Field(..., description="Estimated travel time in minutes")
+    recommended_price: float = Field(..., description="Recommended price based on distance")
+    polyline: str = Field(..., description="Encoded polyline for the route")
 
 
 class RideActionResponseData(BaseModel):
@@ -83,7 +119,7 @@ class RideActionResponseData(BaseModel):
 
 class RideListResponseData(BaseModel):
     """Data structure returned by list rides endpoint"""
-    items: List[RideResponse] = Field(..., description="List of rides")
+    items: List[RideResponseData] = Field(..., description="List of rides")
     page: int = Field(..., description="Current page number")
     per_page: int = Field(..., description="Number of items per page")
     total_pages: int = Field(..., description="Total number of pages")
@@ -133,12 +169,17 @@ class LogoutResponse(BaseModel):
 
 class CreateRideResponse(BaseModel):
     """Complete response model for create ride endpoint"""
-    data: CreateRideResponseData
+    data: RideResponseData
 
 
 class GetRideResponse(BaseModel):
     """Complete response model for get ride endpoint"""
-    data: GetRideResponseData
+    data: RideResponseData
+
+
+class PriceEstimateResponse(BaseModel):
+    """Complete response model for price estimate endpoint"""
+    data: PriceEstimateResponseData
 
 
 class RideActionResponse(BaseModel):
