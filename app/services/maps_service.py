@@ -1,14 +1,28 @@
 import os
-import httpx
+import aiogmaps
 from typing import List, Tuple, Dict, Any, Optional
 import logging
+from datetime import datetime
 
 # Get Google Maps API key from environment variables
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-DIRECTIONS_API_URL = "https://maps.googleapis.com/maps/api/directions/json"
 PRICE_PER_MILE = 1.0  # $1 per mile
 
 logger = logging.getLogger(__name__)
+
+# Initialize Google Maps client (will be created on first use)
+gmaps_client = None
+
+
+async def get_gmaps_client():
+    """Get or create the aiogmaps client"""
+    global gmaps_client
+    if gmaps_client is None:
+        if not GOOGLE_MAPS_API_KEY:
+            logger.error("Google Maps API key not found in environment variables")
+            raise ValueError("Google Maps API key not configured")
+        gmaps_client = aiogmaps.Client(key=GOOGLE_MAPS_API_KEY)
+    return gmaps_client
 
 
 async def calculate_route(
@@ -35,71 +49,59 @@ async def calculate_route(
             "status": str     # Status of the API request
         }
     """
-    if not GOOGLE_MAPS_API_KEY:
-        logger.error("Google Maps API key not found in environment variables")
-        raise ValueError("Google Maps API key not configured")
-    
-    # Format origin and destination as "lat,lng"
-    origin_str = f"{origin[0]},{origin[1]}"
-    destination_str = f"{destination[0]},{destination[1]}"
-    
-    # Prepare request parameters
-    params = {
-        "origin": origin_str,
-        "destination": destination_str,
-        "key": GOOGLE_MAPS_API_KEY,
-        "mode": "driving",
-    }
-    
-    # Add waypoints if provided
-    if waypoints and len(waypoints) > 0:
-        waypoints_str = "|".join([f"{wp[0]},{wp[1]}" for wp in waypoints])
-        params["waypoints"] = waypoints_str
-    
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(DIRECTIONS_API_URL, params=params)
-            response.raise_for_status()  # Raise exception for HTTP errors
-            
-            data = response.json()
-            
-            if data["status"] != "OK":
-                logger.error(f"Google Maps API error: {data['status']}")
-                return {
-                    "status": data["status"],
-                    "error_message": data.get("error_message", "Unknown error")
-                }
-            
-            # Extract route information
-            route = data["routes"][0]
-            leg = route["legs"][0]  # First leg of the route
-            
-            # Calculate total distance and duration
-            distance_meters = sum(step["distance"]["value"] for step in leg["steps"])
-            duration_seconds = sum(step["duration"]["value"] for step in leg["steps"])
-            
-            # Convert to miles and minutes
-            distance_miles = distance_meters / 1609.34  # 1 mile = 1609.34 meters
-            duration_minutes = duration_seconds // 60
-            
-            # Calculate recommended price
-            recommended_price = distance_miles * PRICE_PER_MILE
-            
+        # Get the client
+        gmaps = await get_gmaps_client()
+        
+        # Format origin and destination
+        origin_str = f"{origin[0]},{origin[1]}"
+        destination_str = f"{destination[0]},{destination[1]}"
+        
+        # Prepare waypoints if provided
+        waypoints_list = None
+        if waypoints and len(waypoints) > 0:
+            waypoints_list = [f"{wp[0]},{wp[1]}" for wp in waypoints]
+        
+        # Call Google Maps Directions API asynchronously
+        directions_result = await gmaps.directions(
+            origin=origin_str,
+            destination=destination_str,
+            waypoints=waypoints_list,
+            mode="driving",
+            departure_time=datetime.now()  # For traffic information
+        )
+        
+        if not directions_result:
+            logger.error("No route found")
             return {
-                "distance_miles": round(distance_miles, 2),
-                "duration_minutes": int(duration_minutes),
-                "recommended_price": round(recommended_price, 2),
-                "polyline": route["overview_polyline"]["points"],
-                "steps": leg["steps"],
-                "status": "OK"
+                "status": "ZERO_RESULTS",
+                "error_message": "No route found"
             }
-    
-    except httpx.HTTPError as e:
-        logger.error(f"HTTP error occurred: {e}")
+        
+        # Extract route information
+        route = directions_result[0]
+        leg = route["legs"][0]  # First leg of the route
+        
+        # Calculate total distance and duration
+        distance_meters = leg["distance"]["value"]
+        duration_seconds = leg["duration"]["value"]
+        
+        # Convert to miles and minutes
+        distance_miles = distance_meters / 1609.34  # 1 mile = 1609.34 meters
+        duration_minutes = duration_seconds // 60
+        
+        # Calculate recommended price
+        recommended_price = distance_miles * PRICE_PER_MILE
+        
         return {
-            "status": "HTTP_ERROR",
-            "error_message": str(e)
+            "distance_miles": round(distance_miles, 2),
+            "duration_minutes": int(duration_minutes),
+            "recommended_price": round(recommended_price, 2),
+            "polyline": route["overview_polyline"]["points"],
+            "steps": leg["steps"],
+            "status": "OK"
         }
+    
     except Exception as e:
         logger.error(f"Error calculating route: {e}")
         return {
