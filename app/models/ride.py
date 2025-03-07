@@ -29,6 +29,19 @@ class Location(Base):
     __table_args__ = (Index("idx_lat_long", "latitude", "longitude"),)
 
 
+class RideStop(Base):
+    __tablename__ = "ride_stops"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ride_id = Column(Integer, ForeignKey("rides.id"), nullable=False)
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
+    stop_order = Column(Integer, nullable=False)  # Order of the stop in the ride
+    
+    # Relationships
+    ride = relationship("Ride", back_populates="stops")
+    location = relationship("Location")
+
+
 class Ride(Base):
     __tablename__ = "rides"
 
@@ -44,7 +57,9 @@ class Ride(Base):
     ride_date = Column(DateTime, nullable=False)
     registration_open = Column(Boolean, default=True)
     distance_miles = Column(Float, nullable=False)
+    estimated_duration_minutes = Column(Integer, nullable=False)  # Estimated travel time in minutes
     is_recurring = Column(Boolean, default=False)
+    has_stops = Column(Boolean, default=False)  # Whether the ride has intermediate stops
 
     # Add relationships
     driver = relationship("Driver", back_populates="rides_as_driver")
@@ -53,6 +68,7 @@ class Ride(Base):
     end_location = relationship("Location", foreign_keys=[end_location_id])
     riders = relationship("Customer", secondary="ride_riders")
     recurring_pattern = relationship("RecurringPattern", backref="ride")
+    stops = relationship("RideStop", back_populates="ride", order_by="RideStop.stop_order")
 
 
 class RideRiders(Base):
