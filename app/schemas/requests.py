@@ -61,6 +61,18 @@ class CarUpdateRequest(BaseModel):
 
 
 # Ride Request Models
+class LocationRequest(BaseModel):
+    """Request model for a location"""
+    address: str = Field(..., description="Location address")
+    coordinates: str = Field(..., description="Location coordinates (lat,lng)")
+
+
+class StopRequest(BaseModel):
+    """Request model for a ride stop"""
+    location: LocationRequest = Field(..., description="Stop location")
+    stop_order: int = Field(..., description="Order of the stop in the ride")
+
+
 class RecurringPatternRequest(BaseModel):
     """Request model for recurring ride pattern"""
     days_of_week: List[int] = Field(..., description="Days of week (1-7 representing Monday-Sunday)")
@@ -71,15 +83,20 @@ class RecurringPatternRequest(BaseModel):
 class CreateRideRequest(BaseModel):
     """Request model for creating a new ride"""
     car_id: int = Field(..., description="ID of the car to use for this ride")
-    start_location: str = Field(..., description="Starting location address")
-    end_location: str = Field(..., description="Destination address")
-    start_coordinates: str = Field(..., description="Starting coordinates (lat,lng)")
-    end_coordinates: str = Field(..., description="Destination coordinates (lat,lng)")
-    price: float = Field(..., description="Ride price")
+    start_location: LocationRequest = Field(..., description="Starting location")
+    end_location: LocationRequest = Field(..., description="Destination location")
+    stops: Optional[List[StopRequest]] = Field(None, description="Intermediate stops (optional)")
     max_riders: int = Field(..., description="Maximum number of riders")
     ride_date: datetime = Field(..., description="Date and time of the ride")
     is_recurring: bool = Field(False, description="Whether the ride is recurring")
     recurring_pattern: Optional[RecurringPatternRequest] = Field(None, description="Recurring pattern details")
+
+
+class EstimateRidePriceRequest(BaseModel):
+    """Request model for estimating ride price"""
+    start_location: LocationRequest = Field(..., description="Starting location")
+    end_location: LocationRequest = Field(..., description="Destination location")
+    stops: Optional[List[LocationRequest]] = Field(None, description="Intermediate stops (optional)")
 
 
 class JoinRideRequest(BaseModel):
