@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean, ARRAY, Index
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean, ARRAY, Index, Enum, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy import DateTime
 import datetime
+import enum
 
 from app.database.session import Base
 
@@ -42,32 +43,65 @@ class RideStop(Base):
     location = relationship("Location")
 
 
+class RideStatus(str, enum.Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
 class Ride(Base):
     __tablename__ = "rides"
 
     id = Column(Integer, primary_key=True, index=True)
-    driver_id = Column(Integer, ForeignKey("drivers.id"))
-    car_id = Column(Integer, ForeignKey("cars.id"), nullable=True)  # Link to the car used for this ride
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    
+    # Ride Details
+    status = Column(Enum(RideStatus), default=RideStatus.PENDING)
+    distance_miles = Column(Float)
+    duration_minutes = Column(Integer)
+    route_polyline = Column(String)
+    route_steps = Column(String)  # JSON string of route steps
+    
+    # Pricing
+    base_price = Column(Float)
+    stop_fee = Column(Float)
+    time_fee = Column(Float)
+    platform_fee = Column(Float)
+    stripe_fees = Column(Float)
+    total_price = Column(Float)
+    driver_earnings = Column(Float)
+    
+    # Scheduling
+    scheduled_for = Column(DateTime, nullable=True)
+    pickup_time = Column(DateTime, nullable=True)
+    dropoff_time = Column(DateTime, nullable=True)
+    
+    # Additional Information
+    number_of_stops = Column(Integer, default=0)
+    is_recurring = Column(Boolean, default=False)
+    notes = Column(String, nullable=True)
+    
+    # Safety and Verification
+    emergency_contact = Column(String, nullable=True)  # JSON string of emergency contact
+    verification_code = Column(String, nullable=True)
+    
+    # Foreign Keys
+    driver_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    creator_id = Column(Integer, ForeignKey("users.id"))
+    car_id = Column(Integer, ForeignKey("cars.id"), nullable=True)
     start_location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
     end_location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
-    price = Column(Float, nullable=False)
-    recommended_price = Column(Float, nullable=False)
-    max_riders = Column(Integer, default=4)
-    current_riders = Column(Integer, default=0)
-    ride_date = Column(DateTime, nullable=False)
-    registration_open = Column(Boolean, default=True)
-    distance_miles = Column(Float, nullable=False)
-    estimated_duration_minutes = Column(Integer, nullable=False)  # Estimated travel time in minutes
-    is_recurring = Column(Boolean, default=False)
-    has_stops = Column(Boolean, default=False)  # Whether the ride has intermediate stops
-
-    # Add relationships
-    driver = relationship("Driver", back_populates="rides_as_driver")
+    
+    # Relationships
+    driver = relationship("User", foreign_keys=[driver_id], back_populates="driven_rides")
+    creator = relationship("User", foreign_keys=[creator_id], back_populates="created_rides")
     car = relationship("Car", back_populates="rides")
-    start_location = relationship("Location", foreign_keys=[start_location_id])
-    end_location = relationship("Location", foreign_keys=[end_location_id])
+    start_location_obj = relationship("Location", foreign_keys=[start_location_id])
+    end_location_obj = relationship("Location", foreign_keys=[end_location_id])
     riders = relationship("Customer", secondary="ride_riders")
-    recurring_pattern = relationship("RecurringPattern", backref="ride")
+    recurring_pattern_obj = relationship("RecurringPattern", backref="ride")
     stops = relationship("RideStop", back_populates="ride", order_by="RideStop.stop_order")
 
 
