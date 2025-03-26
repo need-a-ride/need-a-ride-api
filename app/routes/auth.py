@@ -41,6 +41,7 @@ from app.services.auth_service import (
     COOKIE_HTTPONLY,
     COOKIE_SAMESITE
 )
+from app.core.oauth import oauth, create_or_update_user
 
 router = APIRouter()
 
@@ -329,20 +330,76 @@ async def logout(response: Response):
     return LogoutResponse(data=logout_data)
 
 
-# OAuth routes for future implementation
-@router.get("/oauth/google/login", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def login_via_google():
+@router.get("/oauth/google/login")
+async def login_via_google(request: Request):
     """
-    Placeholder for Google OAuth login
-    This will be implemented in the mobile app
+    Redirect to Google OAuth login page
     """
-    return {"message": "Google OAuth login will be implemented in the mobile app"}
+    redirect_uri = request.url_for('google_auth_callback')
+    return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
-@router.get("/oauth/google/callback", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def google_auth_callback():
+@router.get("/oauth/google/callback")
+async def google_auth_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    response: Response = None
+):
     """
-    Placeholder for Google OAuth callback
-    This will be implemented in the mobile app
+    Handle Google OAuth callback
     """
-    return {"message": "Google OAuth callback will be implemented in the mobile app"}
+    try:
+        # Get token from Google
+        token = await oauth.google.authorize_access_token(request)
+        
+        # Get user info from Google
+        user_info = await oauth.google.parse_id_token(request, token)
+        
+        # Create or update user in database
+        user = await create_or_update_user(db, user_info)
+        
+        # Create access and refresh tokens
+        access_token = create_access_token(data={"sub": user.email})
+        refresh_token = create_refresh_token(data={"sub": user.email})
+        
+        # Set cookies
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=COOKIE_HTTPONLY,
+            secure=COOKIE_SECURE,
+            samesite=COOKIE_SAMESITE,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
+        
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=COOKIE_HTTPONLY,
+            secure=COOKIE_SECURE,
+            samesite=COOKIE_SAMESITE,
+            max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+        )
+        
+        # Return success response
+        return LoginResponse(
+            data=LoginResponseData(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_type="bearer",
+                expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                user=UserProfileResponse(
+                    id=user.id,
+                    email=user.email,
+                    name=user.name,
+                    phone=user.phone,
+                    profile_picture=user.profile_picture
+                )
+            )
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
