@@ -1,127 +1,184 @@
 import os
+from typing import List, Optional
 import aiogmaps
-from typing import List, Tuple, Dict, Any, Optional
 import logging
-from datetime import datetime
+from app.services.price_service import calculate_ride_price
+from app.schemas.maps import (
+    RouteRequest,
+    RouteResponse,
+    Location,
+    Address,
+    RouteBounds,
+    RouteSummary,
+    PriceBreakdown
+)
 
-# Get Google Maps API key from environment variables
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-PRICE_PER_MILE = 1.0  # $1 per mile
-
+# Initialize Google Maps client
+gmaps_client = None
 logger = logging.getLogger(__name__)
 
-# Initialize Google Maps client (will be created on first use)
-gmaps_client = None
-
-
-async def get_gmaps_client():
-    """Get or create the aiogmaps client"""
+def get_gmaps_client():
     global gmaps_client
     if gmaps_client is None:
-        if not GOOGLE_MAPS_API_KEY:
-            logger.error("Google Maps API key not found in environment variables")
-            raise ValueError("Google Maps API key not configured")
-        gmaps_client = aiogmaps.Client(key=GOOGLE_MAPS_API_KEY)
+        api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_MAPS_API_KEY environment variable is not set")
+        gmaps_client = aiogmaps.Client(key=api_key)
     return gmaps_client
 
-
 async def calculate_route(
-    origin: Tuple[float, float],
-    destination: Tuple[float, float],
-    waypoints: Optional[List[Tuple[float, float]]] = None
-) -> Dict[str, Any]:
+    request: RouteRequest
+) -> RouteResponse:
     """
-    Calculate route information using Google Maps Directions API
-    
-    Args:
-        origin: Tuple of (latitude, longitude) for the starting point
-        destination: Tuple of (latitude, longitude) for the ending point
-        waypoints: Optional list of (latitude, longitude) tuples for intermediate stops
-        
-    Returns:
-        Dictionary containing route information:
-        {
-            "distance_miles": float,
-            "duration_minutes": int,
-            "recommended_price": float,
-            "polyline": str,  # Encoded polyline for the route
-            "steps": list,    # List of steps in the route
-            "status": str     # Status of the API request
-        }
+    Calculate car route, distance, duration, and price using Google Maps API
     """
     try:
-        # Get the client
-        gmaps = await get_gmaps_client()
+        # Format coordinates for Google Maps API
+        origin = f"{request.start_coords[0]},{request.start_coords[1]}"
+        destination = f"{request.end_coords[0]},{request.end_coords[1]}"
         
-        # Format origin and destination
-        origin_str = f"{origin[0]},{origin[1]}"
-        destination_str = f"{destination[0]},{destination[1]}"
+        # Format waypoints if provided
+        formatted_waypoints = None
+        if request.waypoints:
+            formatted_waypoints = [
+                f"{wp[0]},{wp[1]}"
+                for wp in request.waypoints
+            ]
         
-        # Prepare waypoints if provided
-        waypoints_list = None
-        if waypoints and len(waypoints) > 0:
-            waypoints_list = [f"{wp[0]},{wp[1]}" for wp in waypoints]
+        # Get Google Maps client
+        gmaps = get_gmaps_client()
         
-        # Call Google Maps Directions API asynchronously
+        # Calculate route specifically for driving
         directions_result = await gmaps.directions(
-            origin=origin_str,
-            destination=destination_str,
-            waypoints=waypoints_list,
-            mode="driving",
-            departure_time=datetime.now()  # For traffic information
+            origin=origin,
+            destination=destination,
+            waypoints=formatted_waypoints,
+            mode="driving",  # Specifically request driving directions
+            optimize_waypoints=True,
+            departure_time="now",  # Use current time for traffic information
+            alternatives=False  # We only need the best route for driving
         )
         
         if not directions_result:
-            logger.error("No route found")
-            return {
-                "status": "ZERO_RESULTS",
-                "error_message": "No route found"
-            }
+            return RouteResponse(
+                status="ERROR",
+                distance_miles=0,
+                duration_minutes=0,
+                recommended_price=0,
+                price_breakdown=PriceBreakdown(
+                    total_price=0,
+                    base_price=0,
+                    stop_fee=0,
+                    time_fee=0,
+                    platform_fee=0,
+                    driver_earnings=0,
+                    price_per_mile=0
+                ),
+                polyline="",
+                route_summary=RouteSummary(
+                    start_location=Location(lat=0, lng=0),
+                    end_location=Location(lat=0, lng=0),
+                    start_address="",
+                    end_address="",
+                    bounds=RouteBounds(
+                        northeast=Location(lat=0, lng=0),
+                        southwest=Location(lat=0, lng=0)
+                    ),
+                    copyrights="",
+                    stops=[]
+                ),
+                stops=[],
+                error_message="No route found"
+            )
         
-        # Extract route information
+        # Get the best driving route
         route = directions_result[0]
-        leg = route["legs"][0]  # First leg of the route
+        
+        # Get the route summary
+        route_summary = route['routes'][0]
         
         # Calculate total distance and duration
-        distance_meters = leg["distance"]["value"]
-        duration_seconds = leg["duration"]["value"]
+        distance_meters = route_summary['distance']['value']
+        duration_seconds = route_summary['duration']['value']
         
         # Convert to miles and minutes
-        distance_miles = distance_meters / 1609.34  # 1 mile = 1609.34 meters
-        duration_minutes = duration_seconds // 60
+        distance_miles = distance_meters / 1609.34
+        duration_minutes = duration_seconds / 60
         
-        # Calculate recommended price
-        recommended_price = distance_miles * PRICE_PER_MILE
+        # Calculate price using our price service
+        price_info = await calculate_ride_price(
+            distance_miles=distance_miles,
+            duration_minutes=int(duration_minutes),
+            number_of_stops=len(request.waypoints) if request.waypoints else 0
+        )
         
-        return {
-            "distance_miles": round(distance_miles, 2),
-            "duration_minutes": int(duration_minutes),
-            "recommended_price": round(recommended_price, 2),
-            "polyline": route["overview_polyline"]["points"],
-            "steps": leg["steps"],
-            "status": "OK"
-        }
-    
+        # Create route summary
+        summary = RouteSummary(
+            start_location=Location(**route_summary['start_location']),
+            end_location=Location(**route_summary['end_location']),
+            start_address=route_summary['start_address'],
+            end_address=route_summary['end_address'],
+            bounds=RouteBounds(
+                northeast=Location(**route_summary['bounds']['northeast']),
+                southwest=Location(**route_summary['bounds']['southwest'])
+            ),
+            copyrights=route_summary['copyrights'],
+            stops=[
+                Address(
+                    location=Location(**stop['location']),
+                    address=stop['address']
+                )
+                for stop in route_summary.get('stops', [])
+            ]
+        )
+        
+        return RouteResponse(
+            status="OK",
+            distance_miles=round(distance_miles, 2),
+            duration_minutes=int(duration_minutes),
+            recommended_price=price_info.total_price,
+            price_breakdown=price_info,
+            polyline=route['overview_polyline']['points'],
+            route_summary=summary,
+            stops=summary.stops or []
+        )
+        
     except Exception as e:
         logger.error(f"Error calculating route: {e}")
-        return {
-            "status": "ERROR",
-            "error_message": str(e)
-        }
+        return RouteResponse(
+            status="ERROR",
+            distance_miles=0,
+            duration_minutes=0,
+            recommended_price=0,
+            price_breakdown=PriceBreakdown(
+                total_price=0,
+                base_price=0,
+                stop_fee=0,
+                time_fee=0,
+                platform_fee=0,
+                driver_earnings=0,
+                price_per_mile=0
+            ),
+            polyline="",
+            route_summary=RouteSummary(
+                start_location=Location(lat=0, lng=0),
+                end_location=Location(lat=0, lng=0),
+                start_address="",
+                end_address="",
+                bounds=RouteBounds(
+                    northeast=Location(lat=0, lng=0),
+                    southwest=Location(lat=0, lng=0)
+                ),
+                copyrights="",
+                stops=[]
+            ),
+            stops=[],
+            error_message=str(e)
+        )
 
-
-async def calculate_price_per_rider(base_price: float, num_riders: int) -> float:
+async def calculate_price_per_rider(total_price: float, number_of_riders: int) -> float:
     """
-    Calculate the price per rider based on the total price and number of riders
-    
-    Args:
-        base_price: The total ride price
-        num_riders: Number of riders (excluding driver)
-        
-    Returns:
-        Price per rider
+    Calculate the price per rider when splitting the cost
     """
-    if num_riders <= 0:
-        return base_price  # If no riders, the full price applies
-    
-    return round(base_price / num_riders, 2) 
+    from app.services.price_service import calculate_price_per_rider as calculate_rider_price
+    return await calculate_rider_price(total_price, number_of_riders)
