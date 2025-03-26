@@ -1,8 +1,8 @@
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import aiogmaps
 import logging
-from app.services.price_service import calculate_ride_price
+from app.services.price_service import calculate_ride_price, calculate_price_per_rider
 from app.schemas.maps import (
     RouteRequest,
     RouteResponse,
@@ -12,10 +12,17 @@ from app.schemas.maps import (
     RouteSummary,
     PriceBreakdown
 )
+from app.core.config import settings
+from app.models.location import Location as LocationModel
+from sqlalchemy.orm import Session
+from googlemaps import Client
+from app.core.maps import calculate_route, geocode_address, reverse_geocode
+from app.core.location import LocationService
 
 # Initialize Google Maps client
 gmaps_client = None
 logger = logging.getLogger(__name__)
+gmaps = Client(key=settings.GOOGLE_MAPS_API_KEY)
 
 def get_gmaps_client():
     global gmaps_client
@@ -26,159 +33,183 @@ def get_gmaps_client():
         gmaps_client = aiogmaps.Client(key=api_key)
     return gmaps_client
 
-async def calculate_route(
-    request: RouteRequest
-) -> RouteResponse:
+async def calculate_ride_route(
+    start_coords: Tuple[float, float],
+    end_coords: Tuple[float, float],
+    waypoints: Optional[List[Tuple[float, float]]] = None
+) -> Optional[RouteResponse]:
     """
-    Calculate car route, distance, duration, and price using Google Maps API
+    Calculate a route for a ride with optional waypoints
     """
-    try:
-        # Format coordinates for Google Maps API
-        origin = f"{request.start_coords[0]},{request.start_coords[1]}"
-        destination = f"{request.end_coords[0]},{request.end_coords[1]}"
-        
-        # Format waypoints if provided
-        formatted_waypoints = None
-        if request.waypoints:
-            formatted_waypoints = [
-                f"{wp[0]},{wp[1]}"
-                for wp in request.waypoints
-            ]
-        
-        # Get Google Maps client
-        gmaps = get_gmaps_client()
-        
-        # Calculate route specifically for driving
-        directions_result = await gmaps.directions(
-            origin=origin,
-            destination=destination,
-            waypoints=formatted_waypoints,
-            mode="driving",  # Specifically request driving directions
-            optimize_waypoints=True,
-            departure_time="now",  # Use current time for traffic information
-            alternatives=False  # We only need the best route for driving
-        )
-        
-        if not directions_result:
-            return RouteResponse(
-                status="ERROR",
-                distance_miles=0,
-                duration_minutes=0,
-                recommended_price=0,
-                price_breakdown=PriceBreakdown(
-                    total_price=0,
-                    base_price=0,
-                    stop_fee=0,
-                    time_fee=0,
-                    platform_fee=0,
-                    driver_earnings=0,
-                    price_per_mile=0
-                ),
-                polyline="",
-                route_summary=RouteSummary(
-                    start_location=Location(lat=0, lng=0),
-                    end_location=Location(lat=0, lng=0),
-                    start_address="",
-                    end_address="",
-                    bounds=RouteBounds(
-                        northeast=Location(lat=0, lng=0),
-                        southwest=Location(lat=0, lng=0)
-                    ),
-                    copyrights="",
-                    stops=[]
-                ),
-                stops=[],
-                error_message="No route found"
-            )
-        
-        # Get the best driving route
-        route = directions_result[0]
-        
-        # Get the route summary
-        route_summary = route['routes'][0]
-        
-        # Calculate total distance and duration
-        distance_meters = route_summary['distance']['value']
-        duration_seconds = route_summary['duration']['value']
-        
-        # Convert to miles and minutes
-        distance_miles = distance_meters / 1609.34
-        duration_minutes = duration_seconds / 60
-        
-        # Calculate price using our price service
-        price_info = await calculate_ride_price(
-            distance_miles=distance_miles,
-            duration_minutes=int(duration_minutes),
-            number_of_stops=len(request.waypoints) if request.waypoints else 0
-        )
-        
-        # Create route summary
-        summary = RouteSummary(
-            start_location=Location(**route_summary['start_location']),
-            end_location=Location(**route_summary['end_location']),
-            start_address=route_summary['start_address'],
-            end_address=route_summary['end_address'],
-            bounds=RouteBounds(
-                northeast=Location(**route_summary['bounds']['northeast']),
-                southwest=Location(**route_summary['bounds']['southwest'])
-            ),
-            copyrights=route_summary['copyrights'],
-            stops=[
-                Address(
-                    location=Location(**stop['location']),
-                    address=stop['address']
-                )
-                for stop in route_summary.get('stops', [])
-            ]
-        )
-        
-        return RouteResponse(
-            status="OK",
-            distance_miles=round(distance_miles, 2),
-            duration_minutes=int(duration_minutes),
-            recommended_price=price_info.total_price,
-            price_breakdown=price_info,
-            polyline=route['overview_polyline']['points'],
-            route_summary=summary,
-            stops=summary.stops or []
-        )
-        
-    except Exception as e:
-        logger.error(f"Error calculating route: {e}")
-        return RouteResponse(
-            status="ERROR",
-            distance_miles=0,
-            duration_minutes=0,
-            recommended_price=0,
-            price_breakdown=PriceBreakdown(
-                total_price=0,
-                base_price=0,
-                stop_fee=0,
-                time_fee=0,
-                platform_fee=0,
-                driver_earnings=0,
-                price_per_mile=0
-            ),
-            polyline="",
-            route_summary=RouteSummary(
-                start_location=Location(lat=0, lng=0),
-                end_location=Location(lat=0, lng=0),
-                start_address="",
-                end_address="",
-                bounds=RouteBounds(
-                    northeast=Location(lat=0, lng=0),
-                    southwest=Location(lat=0, lng=0)
-                ),
-                copyrights="",
-                stops=[]
-            ),
-            stops=[],
-            error_message=str(e)
-        )
+    return await calculate_route(start_coords, end_coords, waypoints)
+
+async def get_coordinates_from_address(address: str) -> Optional[Tuple[float, float]]:
+    """
+    Get coordinates from an address
+    """
+    return await geocode_address(address)
+
+async def get_address_from_coordinates(coords: Tuple[float, float]) -> Optional[str]:
+    """
+    Get formatted address from coordinates
+    """
+    return await reverse_geocode(coords)
 
 async def calculate_price_per_rider(total_price: float, number_of_riders: int) -> float:
     """
     Calculate the price per rider when splitting the cost
     """
-    from app.services.price_service import calculate_price_per_rider as calculate_rider_price
-    return await calculate_rider_price(total_price, number_of_riders)
+    return await calculate_price_per_rider(total_price, number_of_riders)
+
+async def calculate_route(
+    start_coords: Tuple[float, float],
+    end_coords: Tuple[float, float],
+    waypoints: Optional[List[Tuple[float, float]]] = None
+) -> Optional[RouteResponse]:
+    """
+    Calculate a route between two points with optional waypoints
+    """
+    try:
+        # Format coordinates for Google Maps API
+        origin = f"{start_coords[0]},{start_coords[1]}"
+        destination = f"{end_coords[0]},{end_coords[1]}"
+        
+        # Format waypoints if provided
+        formatted_waypoints = []
+        if waypoints:
+            formatted_waypoints = [
+                f"{wp[0]},{wp[1]}" for wp in waypoints
+            ]
+
+        # Request directions from Google Maps API
+        directions_result = gmaps.directions(
+            origin=origin,
+            destination=destination,
+            waypoints=formatted_waypoints if formatted_waypoints else None,
+            mode="driving",
+            alternatives=False
+        )
+
+        if not directions_result:
+            return None
+
+        route = directions_result[0]
+        leg = route['legs'][0]
+
+        # Calculate total distance and duration
+        total_distance = sum(leg['distance']['value'] for leg in route['legs'])
+        total_duration = sum(leg['duration']['value'] for leg in route['legs'])
+
+        # Create route summary
+        route_summary = RouteSummary(
+            start_location=Address(
+                location=Location(
+                    lat=route['bounds']['northeast']['lat'],
+                    lng=route['bounds']['northeast']['lng']
+                ),
+                address=leg['start_address']
+            ),
+            end_location=Address(
+                location=Location(
+                    lat=route['bounds']['southwest']['lat'],
+                    lng=route['bounds']['southwest']['lng']
+                ),
+                address=leg['end_address']
+            ),
+            bounds={
+                'northeast': {
+                    'lat': route['bounds']['northeast']['lat'],
+                    'lng': route['bounds']['northeast']['lng']
+                },
+                'southwest': {
+                    'lat': route['bounds']['southwest']['lat'],
+                    'lng': route['bounds']['southwest']['lng']
+                }
+            },
+            copyrights=route['copyrights']
+        )
+
+        # Create price breakdown
+        price_breakdown = PriceBreakdown(
+            base_price=0.0,  # Will be calculated by price service
+            stop_fee=0.0,
+            time_fee=0.0,
+            platform_fee=0.0,
+            stripe_fees=0.0,
+            total_price=0.0,
+            driver_earnings=0.0
+        )
+
+        return RouteResponse(
+            status="success",
+            distance_miles=total_distance * 0.000621371,  # Convert meters to miles
+            duration_minutes=total_duration // 60,  # Convert seconds to minutes
+            route_polyline=route['overview_polyline']['points'],
+            route_steps=route['legs'][0]['steps'],
+            route_summary=route_summary,
+            price_breakdown=price_breakdown
+        )
+
+    except Exception as e:
+        return RouteResponse(
+            status="error",
+            error_message=str(e)
+        )
+
+async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
+    """
+    Convert an address to coordinates
+    """
+    try:
+        result = gmaps.geocode(address)
+        if result:
+            location = result[0]['geometry']['location']
+            return (location['lat'], location['lng'])
+        return None
+    except Exception:
+        return None
+
+async def reverse_geocode(coords: Tuple[float, float]) -> Optional[str]:
+    """
+    Convert coordinates to an address
+    """
+    try:
+        result = gmaps.reverse_geocode(coords)
+        if result:
+            return result[0]['formatted_address']
+        return None
+    except Exception:
+        return None
+
+async def get_or_create_location(
+    db: Session,
+    address: str,
+    latitude: float,
+    longitude: float,
+    formatted_address: Optional[str] = None
+) -> LocationModel:
+    """
+    Get an existing location or create a new one
+    """
+    # Try to find existing location
+    location = db.query(LocationModel).filter(
+        LocationModel.latitude == latitude,
+        LocationModel.longitude == longitude
+    ).first()
+
+    if not location:
+        # Create new location if not found
+        if not formatted_address:
+            formatted_address = await reverse_geocode((latitude, longitude))
+        
+        location = LocationModel(
+            address=address,
+            latitude=latitude,
+            longitude=longitude,
+            formatted_address=formatted_address
+        )
+        db.add(location)
+        db.flush()
+        db.refresh(location)
+
+    return location
